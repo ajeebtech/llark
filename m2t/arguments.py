@@ -36,10 +36,10 @@ class ModelArguments:
         metadata={"help": "whether to use a token for audio start/end; suggest to set True."},
     )
     mm_hidden_size: int = field(
-        default=4800,
+        default=512,
         metadata={
             "help": "the size of the multimodal embeddings at each time frame "
-            + "(i.e. 4800 for Jukebox; 512 for CLAP)"
+            + "(512 for CLAP; 4800 for Jukebox)"
         },
     )
 

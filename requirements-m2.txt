@@ -1,0 +1,38 @@
+# M2-compatible requirements for LLark PoC
+# Replace the original requirements.txt with this file for M2 Mac training.
+#
+# Key changes from original:
+#   - torch>=2.2.0 (MPS support; was torch==1.13.0)
+#   - transformers>=4.40.0 (Qwen2 support; was 4.29.2)
+#   - Removed: flash-attn, triton (CUDA-only)
+#   - Removed: dill==0.3.1.1 (pinned version conflicts)
+#   - Added: laion-clap (CLAP audio encoder)
+#   - Added: peft (LoRA)
+#   - Added: yt-dlp (YouTube audio download for MusicCaps)
+#   - Added: soundfile, resampy (audio I/O for CLAP)
+
+torch>=2.2.0
+torchaudio>=2.2.0
+torchvision>=0.17.0
+transformers>=4.40.0
+datasets>=2.18.0
+peft>=0.10.0
+accelerate>=0.28.0
+webdataset>=0.2.86
+braceexpand
+librosa
+soundfile
+resampy
+scipy
+numpy
+pandas
+ffmpeg-python
+beautifulsoup4
+msgspec
+sentencepiece
+google-cloud-storage>=2.10.0
+laion-clap
+yt-dlp
+einops
+wandb
+tqdm

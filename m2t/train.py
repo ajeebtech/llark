@@ -32,6 +32,7 @@ from m2t.llava.train.train import (
 )
 from m2t.models.llamav2 import WrappedLlamav2ForCausalLM
 from m2t.models.mpt import WrappedMPTForCausalLM
+from m2t.models.qwen2 import WrappedQwen2ForCausalLM
 from m2t.models.trainer import WrappedTrainer
 from m2t.special_tokens import (
     DEFAULT_BOS_TOKEN,
@@ -61,6 +62,13 @@ def train(
     # if model_args.vision_tower is not None:
     if "mpt" in model_args.model_name_or_path:
         model = WrappedMPTForCausalLM.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            mm_hidden_size=model_args.mm_hidden_size,
+            **bnb_model_from_pretrained_args,
+        )
+    elif "qwen2" in model_args.model_name_or_path.lower() or "qwen" in model_args.model_name_or_path.lower():
+        model = WrappedQwen2ForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             mm_hidden_size=model_args.mm_hidden_size,
@@ -107,6 +115,9 @@ def train(
 
     tokenizer = get_tokenizer(model_args, training_args)
 
+    # Tokenizer setup: ensure pad token exists.
+    # For LLaMA-based models (version v0), also add eos/bos/unk special tokens.
+    # For Qwen2 and other models, the tokenizer handles this natively.
     if model_args.version == "v0":
         if tokenizer.pad_token is None:
             smart_tokenizer_and_embedding_resize(
@@ -114,7 +125,7 @@ def train(
                 tokenizer=tokenizer,
                 model=model,
             )
-        if "llama" in model_args.model_name_or_path:
+        if "llama" in model_args.model_name_or_path.lower():
             tokenizer.add_special_tokens(
                 {
                     "eos_token": DEFAULT_EOS_TOKEN,
@@ -123,7 +134,20 @@ def train(
                 }
             )
     else:
-        raise NotImplementedError(f"version {model_args.version} not implemented.")
+        # For non-LLaMA models (e.g. Qwen2), just ensure a pad token exists.
+        logging.warning(
+            f"version '{model_args.version}' is not 'v0'; skipping LLaMA-specific "
+            "tokenizer setup. Ensure the tokenizer is configured correctly."
+        )
+        if tokenizer.pad_token is None:
+            if tokenizer.eos_token is not None:
+                tokenizer.pad_token = tokenizer.eos_token
+            else:
+                smart_tokenizer_and_embedding_resize(
+                    special_tokens_dict=dict(pad_token=DEFAULT_PAD_TOKEN),
+                    tokenizer=tokenizer,
+                    model=model,
+                )
 
     model_audio_dict = model.get_model().initialize_adapter_modules(
         pretrain_mm_mlp_adapter=model_args.pretrain_mm_mlp_adapter,

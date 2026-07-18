@@ -23,7 +23,6 @@ from m2t.special_tokens import (
 @dataclass
 class AudioEncoderConfig:
     use_audio_start_end: bool = True
-    use_audio_start_end: bool = True
     audio_start_token: str = DEFAULT_AUDIO_START_TOKEN
     audio_end_token: str = DEFAULT_AUDIO_END_TOKEN
-    audio_patch_token = str = DEFAULT_AUDIO_PATCH_TOKEN
+    audio_patch_token: str = DEFAULT_AUDIO_PATCH_TOKEN

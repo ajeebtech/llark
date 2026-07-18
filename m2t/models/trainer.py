@@ -15,12 +15,11 @@ import os
 from typing import Optional
 
 import torch
-from transformers import Trainer
+from transformers import Trainer, PretrainedConfig
 from transformers.trainer import (
     CONFIG_NAME,
     WEIGHTS_INDEX_NAME,
     WEIGHTS_NAME,
-    PretrainedConfig,
     __version__,
     is_sagemaker_mp_enabled,
     logger,

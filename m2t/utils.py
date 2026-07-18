@@ -36,17 +36,28 @@ def get_autocast_type(training_args):
 
 
 def get_compute_dtype(training_args: TrainingArguments):
-    return (
-        torch.float16
-        if training_args.fp16
-        else (torch.bfloat16 if training_args.bf16 else torch.float32)
-    )
+    """Return the appropriate compute dtype for the current hardware.
+
+    On MPS (Apple Silicon), bf16 and tf32 are not supported by PyTorch.
+    We default to float32 in that case.
+    """
+    if training_args.fp16:
+        return torch.float16
+    elif training_args.bf16:
+        return torch.bfloat16
+    else:
+        return torch.float32
 
 
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
-    """Collects the state dict and dump to disk."""
-    if trainer.deepspeed:
-        torch.cuda.synchronize()
+    """Collects the state dict and dumps to disk.
+
+    MPS-safe: avoids torch.cuda.synchronize() which crashes on Apple Silicon.
+    """
+    # Only call cuda synchronize if actually using CUDA (not MPS or CPU)
+    if getattr(trainer, "deepspeed", None):
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         trainer.save_model(output_dir)
         return
 

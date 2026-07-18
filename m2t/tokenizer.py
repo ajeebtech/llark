@@ -26,6 +26,15 @@ def get_tokenizer(model_args: ModelArguments, training_args: TrainingArguments):
             model_max_length=training_args.model_max_length,
             padding_side="right",
         )
+    elif "qwen2" in model_args.model_name_or_path.lower() or "qwen" in model_args.model_name_or_path.lower():
+        # Qwen2 tokenizer requires use_fast=True; the slow tokenizer is not available.
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            model_max_length=training_args.model_max_length,
+            padding_side="right",
+            use_fast=True,
+        )
     else:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
