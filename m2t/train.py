@@ -154,11 +154,11 @@ def train(
         tune_mm_mlp_adapter=model_args.tune_mm_mlp_adapter,
         fsdp=training_args.fsdp,
     )
-    if training_args.bits == 16:
-        if training_args.bf16:
-            model.get_model().mm_projector.to(torch.bfloat16)
-        if training_args.fp16:
-            model.get_model().mm_projector.to(torch.float16)
+    # Cast mm_projector to match the backbone model's precision (usually bfloat16 or float32)
+    # to avoid dtype mismatch errors during forward pass on MPS.
+    backbone_dtype = next(model.parameters()).dtype
+    model.get_model().mm_projector.to(backbone_dtype)
+    logging.warning(f"Casted mm_projector to match backbone dtype: {backbone_dtype}")
 
     audio_config = model_audio_dict["audio_config"]
 
@@ -276,7 +276,7 @@ def train(
     }
     logging.warning(f"sample batch collated info: {info}")
 
-    trainer = WrappedTrainer(model=model, tokenizer=tokenizer, args=training_args, **data_module)
+    trainer = WrappedTrainer(model=model, processing_class=tokenizer, args=training_args, **data_module)
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         trainer.train(resume_from_checkpoint=True)
@@ -286,17 +286,32 @@ def train(
     trainer.save_state()
 
     if training_args.lora_enable:
-        state_dict = get_peft_state_maybe_zero_3(model.named_parameters(), training_args.lora_bias)
-        non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(model.named_parameters())
+        # Avoid importing deepspeed on macOS by checking if deepspeed is used or available
+        try:
+            state_dict = get_peft_state_maybe_zero_3(model.named_parameters(), training_args.lora_bias)
+            non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(model.named_parameters())
+        except (ImportError, ModuleNotFoundError):
+            # Fallback for single-device training without deepspeed (e.g. MPS macOS)
+            logging.warning("DeepSpeed not available. Extracting state dict directly.")
+            from peft import get_peft_model_state_dict
+            state_dict = get_peft_model_state_dict(model, adapter_name="default")
+            # Extract non-lora trainable parameters (like mm_projector)
+            non_lora_state_dict = {
+                k: v for k, v in model.named_parameters() if v.requires_grad and "lora_" not in k
+            }
+
         if training_args.local_rank == 0 or training_args.local_rank == -1:
             model.config.save_pretrained(training_args.output_dir)
             model.save_pretrained(training_args.output_dir, state_dict=state_dict)
+            tokenizer.save_pretrained(training_args.output_dir)
             torch.save(
                 non_lora_state_dict,
                 os.path.join(training_args.output_dir, "non_lora_trainables.bin"),
             )
     else:
         safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
+        if training_args.local_rank == 0 or training_args.local_rank == -1:
+            tokenizer.save_pretrained(training_args.output_dir)
 
     return dict(trainer=trainer, tokenizer=tokenizer, data_module=data_module)
 

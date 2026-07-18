@@ -70,18 +70,67 @@ def load_model_and_tokenizer(model_path: str, device: torch.device):
     from transformers import AutoTokenizer
 
     # Import the Qwen2 model so it registers with AutoModelForCausalLM
-    from m2t.models.qwen2 import WrappedQwen2ForCausalLM  # noqa: F401
-
+    from m2t.models.qwen2 import WrappedQwen2ForCausalLM, WrappedQwen2Config  # noqa: F401
     from transformers import AutoModelForCausalLM
+    from peft import PeftModel
 
     print(f"Loading model from: {model_path}")
-    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+    
+    # 1. Load tokenizer
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+    except Exception:
+        print("[WARN] Tokenizer not found in checkpoint, loading from base Qwen/Qwen2-0.5B-Instruct")
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-0.5B-Instruct", use_fast=True)
+        # Manually register the custom audio tokens added during training
+        from m2t.special_tokens import DEFAULT_AUDIO_PATCH_TOKEN, DEFAULT_AUDIO_START_TOKEN, DEFAULT_AUDIO_END_TOKEN
+        tokenizer.add_tokens([DEFAULT_AUDIO_PATCH_TOKEN], special_tokens=True)
+        tokenizer.add_tokens([DEFAULT_AUDIO_START_TOKEN, DEFAULT_AUDIO_END_TOKEN], special_tokens=True)
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
+    # 2. Load base model config to find the backbone path
+    # Typically, we load from "Qwen/Qwen2-0.5B-Instruct" directly
+    base_model_path = "Qwen/Qwen2-0.5B-Instruct"
+
+    print(f"Loading base model: {base_model_path}")
+    # Load base config and force it to be our custom config class
+    config = WrappedQwen2Config.from_pretrained(base_model_path)
+    config.mm_hidden_size = 512
+    
+    model = WrappedQwen2ForCausalLM.from_pretrained(
+        base_model_path,
+        config=config,
         torch_dtype=torch.float32,  # MPS requires fp32
-        device_map=None,  # we'll move manually
+        device_map=None,
     )
+    
+    # Initialize adapter projector modules on the base model
+    model.get_model().initialize_adapter_modules()
+
+    # 3. Resize model token embeddings to match the tokenizer's vocabulary size (151649)
+    # as saved in the PEFT checkpoints.
+    model.resize_token_embeddings(len(tokenizer))
+
+    # Initialize audio token IDs in AudioEncoderConfig
+    model.initialize_audio_tokenizer(
+        mm_use_audio_start_end=True,
+        tokenizer=tokenizer,
+        device=device,
+    )
+
+    # 4. Load the LoRA adapter weights
+    if os.path.exists(os.path.join(model_path, "adapter_config.json")):
+        print(f"Loading LoRA adapters from: {model_path}")
+        model = PeftModel.from_pretrained(model, model_path)
+        
+        # Load non-lora trainables (the projector weights) if saved separately
+        non_lora_path = os.path.join(model_path, "non_lora_trainables.bin")
+        if os.path.exists(non_lora_path):
+            print(f"Loading non-LoRA projector weights: {non_lora_path}")
+            non_lora_state = torch.load(non_lora_path, map_location="cpu")
+            # Strip model. prefix if present
+            non_lora_state = {k.replace("base_model.model.", ""): v for k, v in non_lora_state.items()}
+            model.load_state_dict(non_lora_state, strict=False)
+
     model = model.to(device)
     model.eval()
 

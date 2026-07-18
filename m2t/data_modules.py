@@ -368,7 +368,7 @@ def assert_hf_src_format(src):
 def _to_conversation_hf(src: Dict[str, List]) -> Dict[str, List]:
     """Parse each element of the dataset into a conversation.
 
-    This takes the (multiple) responses from ChatGPT for a single observation,
+    This takes the (multiple) responses from ChatGPT/MusicCaps for a single observation,
         and unpacks them into individual standalone question-answer pairs, each
         containing the extra data required for training (i.e. audio_encoding and
         audio_encoding_shape).
@@ -378,52 +378,59 @@ def _to_conversation_hf(src: Dict[str, List]) -> Dict[str, List]:
     output_dict = defaultdict(list)
 
     assert_hf_src_format(src)
-    batch_size = len(src["__key__"])
+    
+    # Identify the key column (could be '__key__' or 'id')
+    id_key = "__key__" if "__key__" in src else "id"
+    batch_size = len(src[id_key])
 
     for i in range(batch_size):
-        elem_json = src["json"][i]
-        elem_id = src["__key__"][i]
-
-        # flattened list of floats; needs to be reshaped to
-        # audio_encoding_shape in final stage of pipeline.
+        elem_id = src[id_key][i]
         elem_audio_encoding = src["audio_encoding"][i]
         elem_audio_encoding_shape = src["audio_encoding_shape"][i]
 
-        # for elem in src:
-        if not elem_json.get("response"):
-            logging.warning(f"no response for {src['__key__'][i]}; skipping")
-            continue
-
-        if not isinstance(elem_json["response"], list):
-            logging.warning(
-                f"invalid response for {src['__key__'][i]} " "(could be empty); skipping"
-            )
-            continue
-
-        # Drop the response key from the json; this can be quite large.
-        output_json = {k: elem_json[k] for k in elem_json.keys() if k != "response"}
-
-        for response in elem_json["response"]:
-            question, answer = (response["question"], response["answer"])
-
-            audio_first = random.uniform(0.0, 1.0) > 0.5
-            if audio_first:
-                prompt_text = "\n".join(("<audio>", question))
-            else:
-                prompt_text = "\n".join((question, "<audio>"))
+        # For our local flat JSONL or standard HF dataset, it might have a "conversations" list already
+        if "conversations" in src:
+            conversations = src["conversations"][i]
+            # Since conversations is already a list of [{"from": ..., "value": ...}], we can use it directly
             output = {
                 "audio_encoding": elem_audio_encoding,
                 "audio_encoding_shape": elem_audio_encoding_shape,
                 "__key__": elem_id,
                 "id": elem_id,
-                "json": output_json,
-                "conversations": [
-                    {"from": "human", "value": prompt_text},
-                    {"from": "gpt", "value": answer},
-                ],
+                "json": {},
+                "conversations": conversations,
             }
             for k, v in output.items():
                 output_dict[k].append(v)
+            continue
+
+        # Fallback to original logic if it's the paper's original OpenAI scraper dataset with "json" field containing "response"
+        if "json" in src:
+            elem_json = src["json"][i]
+            if not elem_json.get("response") or not isinstance(elem_json["response"], list):
+                continue
+            output_json = {k: elem_json[k] for k in elem_json.keys() if k != "response"}
+            for response in elem_json["response"]:
+                question, answer = (response["question"], response["answer"])
+                audio_first = random.uniform(0.0, 1.0) > 0.5
+                if audio_first:
+                    prompt_text = "\n".join(("<audio>", question))
+                else:
+                    prompt_text = "\n".join((question, "<audio>"))
+                output = {
+                    "audio_encoding": elem_audio_encoding,
+                    "audio_encoding_shape": elem_audio_encoding_shape,
+                    "__key__": elem_id,
+                    "id": elem_id,
+                    "json": output_json,
+                    "conversations": [
+                        {"from": "human", "value": prompt_text},
+                        {"from": "gpt", "value": answer},
+                    ],
+                }
+                for k, v in output.items():
+                    output_dict[k].append(v)
+
     return output_dict
 
 
@@ -645,11 +652,12 @@ def read_hf_dataset(
         dataset = IterableDataset.from_generator(
             gen_from_msgpack_shards, gen_kwargs={"shards": urls}
         )
-    dataset = split_dataset_by_node(
-        dataset,
-        rank=int(os.environ["RANK"]),
-        world_size=int(os.environ["WORLD_SIZE"]),
-    )
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        dataset = split_dataset_by_node(
+            dataset,
+            rank=int(os.environ["RANK"]),
+            world_size=int(os.environ["WORLD_SIZE"]),
+        )
 
     # Expand/flatten data so that each example contains a single QA pair,
     # pplus audio encodings and metadata (i.e., shape).
@@ -690,24 +698,40 @@ def make_data_module(
     eval_dataset = None
 
     if data_args.train_data_path:
-        train_dataset = read_webdataset(
-            data_args.train_data_path,
-            multimodal_cfg=multimodal_cfg,
-            tokenizer=tokenizer,
-            is_train=True,
-            task_sample_probs=data_args.task_sample_probs
-            if data_args.apply_task_sample_probs
-            else None,
-        )
+        if data_args.train_data_path.endswith(".jsonl") or data_args.train_data_path.endswith(".json"):
+            train_dataset = read_hf_dataset(
+                data_args.train_data_path,
+                multimodal_cfg=multimodal_cfg,
+                tokenizer=tokenizer,
+                is_train=True,
+            )
+        else:
+            train_dataset = read_webdataset(
+                data_args.train_data_path,
+                multimodal_cfg=multimodal_cfg,
+                tokenizer=tokenizer,
+                is_train=True,
+                task_sample_probs=data_args.task_sample_probs
+                if data_args.apply_task_sample_probs
+                else None,
+            )
 
     if data_args.eval_data_path:
-        eval_dataset = read_webdataset(
-            data_args.eval_data_path,
-            multimodal_cfg=multimodal_cfg,
-            tokenizer=tokenizer,
-            is_train=False,
-            rsample_frac=data_args.eval_data_subsample,
-        )
+        if data_args.eval_data_path.endswith(".jsonl") or data_args.eval_data_path.endswith(".json"):
+            eval_dataset = read_hf_dataset(
+                data_args.eval_data_path,
+                multimodal_cfg=multimodal_cfg,
+                tokenizer=tokenizer,
+                is_train=False,
+            )
+        else:
+            eval_dataset = read_webdataset(
+                data_args.eval_data_path,
+                multimodal_cfg=multimodal_cfg,
+                tokenizer=tokenizer,
+                is_train=False,
+                rsample_frac=data_args.eval_data_subsample,
+            )
 
     data_collator = data_collator_cls(tokenizer=tokenizer)
     return dict(

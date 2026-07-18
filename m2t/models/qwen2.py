@@ -91,10 +91,11 @@ class WrappedQwen2Model(Qwen2Model):
 
     def forward(
         self,
-        input_ids: torch.LongTensor,
+        input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.ByteTensor] = None,
         position_ids: Optional[torch.Tensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
@@ -110,9 +111,17 @@ class WrappedQwen2Model(Qwen2Model):
         # HACK: preserve original embeddings for adapter pretraining
         orig_embeds_params = getattr(self, "orig_embeds_params", None)
 
-        inputs_embeds = self.embed_tokens(input_ids)
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
 
         if audio_encodings is not None and self.config.use_mm_proj:
+            # Cast audio_encodings to match the weight dtype of self.mm_projector (bfloat16)
+            proj_dtype = self.mm_projector.weight.dtype
+            if isinstance(audio_encodings, list):
+                audio_encodings = [x.to(proj_dtype) if x is not None else None for x in audio_encodings]
+            else:
+                audio_encodings = audio_encodings.to(proj_dtype)
+
             # Project audio features into LLM embedding space
             if isinstance(audio_encodings, list):
                 audio_features = [
@@ -241,6 +250,7 @@ class WrappedQwen2ForCausalLM(Qwen2ForCausalLM):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.Tensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
@@ -265,6 +275,7 @@ class WrappedQwen2ForCausalLM(Qwen2ForCausalLM):
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
